@@ -23,7 +23,7 @@ if [ "$(uname)" != "Linux" ]; then
     exit 1
 fi
 
-VERSION="v2026.09.09"
+VERSION="v2026.09.09.1"
 TIMEOUT=60
 LAUNCH_SCRCPY=false
 SCRCPY_BITRATE=""
