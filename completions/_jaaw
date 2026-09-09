@@ -1,0 +1,89 @@
+#compdef jaaw
+
+_jaaw_aliases() {
+    local alias_file="${XDG_CONFIG_HOME:-$HOME/.config}/jaaw/aliases.tsv"
+    if [[ -f "$alias_file" ]]; then
+        local -a dev_aliases
+        while IFS=$'\t' read -r a target m ip_port updated; do
+            [[ "$a" =~ ^# ]] && continue
+            [[ -n "$a" ]] && dev_aliases+=("$a:${m:-Device} ($target)")
+        done < "$alias_file"
+        _describe -t aliases 'alias perangkat' dev_aliases
+    fi
+}
+
+_jaaw() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C -s -S \
+        '(-w --wizard)'{-w,--wizard}'[Buka menu wizard TUI interaktif]' \
+        '(-p --pair)'{-p,--pair}'[Pairing via QR Code dan auto-connect]' \
+        '(-c --connect)'{-c,--connect}'[Quick-connect ke perangkat aktif di Wi-Fi]' \
+        '(-s --screen)'{-s,--screen}'[Auto-launch scrcpy mirror screen setelah konek]' \
+        '(-b --bitrate)'{-b,--bitrate}'[Set bitrate video scrcpy]:bitrate:(1M 2M 4M 6M 8M 12M 16M)' \
+        '(--screen-off --off)'{--screen-off,--off}'[Matikan layar HP saat mirror screen]' \
+        '--scrcpy-args[Kirim argumen custom ke scrcpy]:argumen:' \
+        '(-u --usb)'{-u,--usb}'[Alihkan perangkat USB ke Wireless ADB port 5555]' \
+        '(-m --manual)'{-m,--manual}'[Pairing manual dengan 6-digit code & IP:Port]' \
+        '(-l --list)'{-l,--list}'[Lihat riwayat perangkat tersimpan]' \
+        '(-d --diag)'{-d,--diag}'[Jalankan diagnostik sistem & firewall]' \
+        '(-r --reset)'{-r,--reset}'[Restart ADB server & disconnect perangkat]' \
+        '(-U --update)'{-U,--update}'[Periksa dan pasang pembaruan terbaru dari GitHub]' \
+        '(-t --timeout)'{-t,--timeout}'[Set timeout deteksi mDNS (detik)]:detik:(10 30 60 120)' \
+        '(-v --version)'{-v,--version}'[Tampilkan informasi versi & pembuat]' \
+        '(-h --help)'{-h,--help}'[Tampilkan bantuan]' \
+        '1:subcommand:->subcmd' \
+        '*::subcmd_args:->subcmd_args'
+
+    case "$state" in
+        subcmd)
+            local -a subcmds
+            subcmds=(
+                'alias:Kelola alias nama perangkat Android'
+                'devices:Tampilkan tabel perangkat aktif dengan mapping alias'
+                'exec:Jalankan perintah ADB pada alias target'
+                'shell:Buka shell ADB interaktif pada alias target'
+                'scrcpy:Buka mirror screen scrcpy pada alias target'
+                'use:Pilih perangkat aktif (export ANDROID_SERIAL)'
+                'init:Inisialisasi wrapper shell fungsi adb transparan'
+                'update:Periksa dan pasang pembaruan terbaru dari GitHub'
+            )
+            _describe -t commands 'perintah' subcmds
+            ;;
+        subcmd_args)
+            case "$line[1]" in
+                alias)
+                    local -a alias_cmds
+                    alias_cmds=(
+                        'set:Daftarkan atau perbarui alias perangkat'
+                        'list:Tampilkan daftar alias yang tersimpan'
+                        'rm:Hapus alias yang terdaftar'
+                        'get:Cetak target serial riil dari alias'
+                    )
+                    if (( CURRENT == 2 )); then
+                        _describe -t commands 'perintah alias' alias_cmds
+                    elif (( CURRENT == 3 )) && [[ "$line[2]" == (rm|get|del|delete) ]]; then
+                        _jaaw_aliases
+                    fi
+                    ;;
+                exec|shell|scrcpy|use)
+                    if (( CURRENT == 2 )); then
+                        _jaaw_aliases
+                    fi
+                    ;;
+                init)
+                    if (( CURRENT == 2 )); then
+                        local -a shells
+                        shells=('bash:Shell Bash' 'zsh:Shell Zsh' 'fish:Shell Fish')
+                        _describe -t shells 'tipe shell' shells
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_jaaw "$@"
+
+

@@ -20,4 +20,4 @@ jobs:
 
       - name: Run ShellCheck
         run: |
-          shellcheck -S warning bin/adbqr install.sh uninstall.sh completions/adbqr.bash
+          shellcheck -S warning bin/jaaw install.sh uninstall.sh completions/jaaw.bash

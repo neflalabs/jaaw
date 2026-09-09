@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Linux uninstaller for adbqr
+# Linux uninstaller for jaaw
 # Supports local execution & one-line uninstaller (curl -fsSL ... | bash)
 # Usage: ./uninstall.sh [PREFIX] [--purge] (default PREFIX=/usr/local)
 
@@ -31,7 +31,7 @@ for arg in "$@"; do
         -h|--help)
             echo -e "${BOLD}Usage:${RESET} $0 [PREFIX] [--purge]"
             echo "  PREFIX   Installation directory prefix (default: /usr/local)"
-            echo "  --purge  Also delete configuration & device history (~/.config/adbqr)"
+            echo "  --purge  Also delete configuration & device history (~/.config/jaaw)"
             exit 0
             ;;
         *)
@@ -43,17 +43,17 @@ for arg in "$@"; do
 done
 
 echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${RED}${BOLD}                    UNINSTALLING ADBQR                            ${RESET}"
+echo -e "${RED}${BOLD}                    UNINSTALLING JAAW                             ${RESET}"
 echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
 
 # Find binary
-DEST="$PREFIX/bin/adbqr"
-if [ ! -f "$DEST" ] && command -v adbqr >/dev/null 2>&1; then
-    DEST=$(command -v adbqr)
+DEST="$PREFIX/bin/jaaw"
+if [ ! -f "$DEST" ] && command -v jaaw >/dev/null 2>&1; then
+    DEST=$(command -v jaaw)
 fi
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/adbqr"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/jaaw"
 
 # Remove binary
 if [ -f "$DEST" ]; then
@@ -68,10 +68,10 @@ else
 fi
 
 # Remove completions
-for comp in /usr/share/bash-completion/completions/adbqr \
-            /etc/bash_completion.d/adbqr \
-            /usr/share/zsh/site-functions/_adbqr \
-            /usr/share/fish/vendor_completions.d/adbqr.fish; do
+for comp in /usr/share/bash-completion/completions/jaaw \
+            /etc/bash_completion.d/jaaw \
+            /usr/share/zsh/site-functions/_jaaw \
+            /usr/share/fish/vendor_completions.d/jaaw.fish; do
     if [ -f "$comp" ]; then
         if [ -w "$comp" ] || [ -w "$(dirname "$comp")" ]; then
             rm -f "$comp" 2>/dev/null || true
@@ -114,5 +114,5 @@ else
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}[✓] Selesai! adbqr telah berhasil di-uninstall dari sistem.${RESET}"
+echo -e "${GREEN}${BOLD}[✓] Selesai! jaaw telah berhasil di-uninstall dari sistem.${RESET}"
 

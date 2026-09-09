@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'bin/adbqr'
+      - 'bin/jaaw'
       - 'install.sh'
       - 'uninstall.sh'
       - 'completions/**'
@@ -48,16 +48,16 @@ jobs:
           echo "tag=$FINAL_TAG" >> "$GITHUB_OUTPUT"
           echo "Calculated new version tag: $FINAL_TAG"
 
-      - name: Update VERSION in bin/adbqr
+      - name: Update VERSION in bin/jaaw
         run: |
           NEW_VERSION="${{ steps.versioning.outputs.tag }}"
-          sed -i 's/^VERSION=".*"/VERSION="'"$NEW_VERSION"'"/' bin/adbqr
+          sed -i 's/^VERSION=".*"/VERSION="'"$NEW_VERSION"'"/' bin/jaaw
 
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bin/adbqr
+          git add bin/jaaw
           if ! git diff --cached --quiet; then
             git commit -m "chore(release): bump version to ${{ steps.versioning.outputs.tag }} [skip ci]"
             git push origin main
@@ -70,11 +70,11 @@ jobs:
           name: "Release ${{ steps.versioning.outputs.tag }}"
           generate_release_notes: true
           files: |
-            bin/adbqr
+            bin/jaaw
             install.sh
             uninstall.sh
-            completions/adbqr.bash
-            completions/_adbqr
-            completions/adbqr.fish
+            completions/jaaw.bash
+            completions/_jaaw
+            completions/jaaw.fish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

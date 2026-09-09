@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Linux installer & dependency helper for adbqr
+# Linux installer & dependency helper for jaaw
 # Supports local execution & one-line install (curl -fsSL ... | bash)
 # Usage: ./install.sh [PREFIX]   (default PREFIX=/usr/local)
 
 set -euo pipefail
 
 PREFIX="${1:-/usr/local}"
-REPO_RAW_URL="https://raw.githubusercontent.com/neflalabs/adbqr/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/neflalabs/jaaw/main"
 
 # Colors and styling
 BOLD='\033[1m'
@@ -73,7 +73,7 @@ check_and_install_dependencies() {
     mgr=$(detect_pkg_manager)
 
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "${GREEN}${BOLD}                    ADBQR INSTALLER & SETUP                       ${RESET}"
+    echo -e "${GREEN}${BOLD}                    JAAW INSTALLER & SETUP                        ${RESET}"
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo -e "  Distro          : ${BOLD}$distro${RESET} ($(uname -m))"
     [ -n "$mgr" ] && echo -e "  Package Manager : ${BOLD}$mgr${RESET}"
@@ -118,7 +118,7 @@ check_and_install_dependencies() {
     if command -v scrcpy >/dev/null 2>&1; then
         echo -e "  [✓] scrcpy       : ${GREEN}Terpasang${RESET} (opsional - screen mirroring)"
     else
-        echo -e "  [-] scrcpy       : ${DIM}Tidak terpasang${RESET} (opsional - untuk fitur 'adbqr -s' mirror screen)"
+        echo -e "  [-] scrcpy       : ${DIM}Tidak terpasang${RESET} (opsional - untuk fitur 'jaaw -s' mirror screen)"
         missing_scrcpy=true
     fi
     echo ""
@@ -174,28 +174,28 @@ check_and_install_dependencies() {
 
 check_and_install_dependencies
 
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/adbqr" ]; then
-    SRC_BIN="$SCRIPT_DIR/bin/adbqr"
-    SRC_BASH_COMP="$SCRIPT_DIR/completions/adbqr.bash"
-    SRC_ZSH_COMP="$SCRIPT_DIR/completions/_adbqr"
-    SRC_FISH_COMP="$SCRIPT_DIR/completions/adbqr.fish"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/jaaw" ]; then
+    SRC_BIN="$SCRIPT_DIR/bin/jaaw"
+    SRC_BASH_COMP="$SCRIPT_DIR/completions/jaaw.bash"
+    SRC_ZSH_COMP="$SCRIPT_DIR/completions/_jaaw"
+    SRC_FISH_COMP="$SCRIPT_DIR/completions/jaaw.fish"
 else
-    echo "Mengunduh adbqr dari GitHub repository..."
-    TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adbqr-install.XXXXXX")
-    SRC_BIN="$TMP_DIR/adbqr"
-    SRC_BASH_COMP="$TMP_DIR/adbqr.bash"
-    SRC_ZSH_COMP="$TMP_DIR/_adbqr"
-    SRC_FISH_COMP="$TMP_DIR/adbqr.fish"
+    echo "Mengunduh jaaw dari GitHub repository..."
+    TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/jaaw-install.XXXXXX")
+    SRC_BIN="$TMP_DIR/jaaw"
+    SRC_BASH_COMP="$TMP_DIR/jaaw.bash"
+    SRC_ZSH_COMP="$TMP_DIR/_jaaw"
+    SRC_FISH_COMP="$TMP_DIR/jaaw.fish"
 
-    curl -fsSL "$REPO_RAW_URL/bin/adbqr" -o "$SRC_BIN" || { echo "Error: Gagal mendownload adbqr." >&2; exit 1; }
-    curl -fsSL "$REPO_RAW_URL/completions/adbqr.bash" -o "$SRC_BASH_COMP" 2>/dev/null || true
-    curl -fsSL "$REPO_RAW_URL/completions/_adbqr" -o "$SRC_ZSH_COMP" 2>/dev/null || true
-    curl -fsSL "$REPO_RAW_URL/completions/adbqr.fish" -o "$SRC_FISH_COMP" 2>/dev/null || true
+    curl -fsSL "$REPO_RAW_URL/bin/jaaw" -o "$SRC_BIN" || { echo "Error: Gagal mendownload jaaw." >&2; exit 1; }
+    curl -fsSL "$REPO_RAW_URL/completions/jaaw.bash" -o "$SRC_BASH_COMP" 2>/dev/null || true
+    curl -fsSL "$REPO_RAW_URL/completions/_jaaw" -o "$SRC_ZSH_COMP" 2>/dev/null || true
+    curl -fsSL "$REPO_RAW_URL/completions/jaaw.fish" -o "$SRC_FISH_COMP" 2>/dev/null || true
 fi
 
-DEST_BIN="$PREFIX/bin/adbqr"
+DEST_BIN="$PREFIX/bin/jaaw"
 
-echo "Memasang adbqr ke $DEST_BIN ..."
+echo "Memasang jaaw ke $DEST_BIN ..."
 if mkdir -p "$PREFIX/bin" 2>/dev/null && [ -w "$PREFIX/bin" ]; then
     install -m 0755 "$SRC_BIN" "$DEST_BIN"
 elif command -v sudo >/dev/null 2>&1; then
@@ -214,10 +214,10 @@ if [ -f "$SRC_BASH_COMP" ]; then
 
     if [ -w "$BASH_COMP_DIR" ] 2>/dev/null; then
         mkdir -p "$BASH_COMP_DIR"
-        install -m 0644 "$SRC_BASH_COMP" "$BASH_COMP_DIR/adbqr" 2>/dev/null && echo -e "  [✓] Bash completion   : ${GREEN}$BASH_COMP_DIR/adbqr${RESET}" || true
+        install -m 0644 "$SRC_BASH_COMP" "$BASH_COMP_DIR/jaaw" 2>/dev/null && echo -e "  [✓] Bash completion   : ${GREEN}$BASH_COMP_DIR/jaaw${RESET}" || true
     elif command -v sudo >/dev/null 2>&1; then
         sudo mkdir -p "$BASH_COMP_DIR" 2>/dev/null || true
-        sudo install -m 0644 "$SRC_BASH_COMP" "$BASH_COMP_DIR/adbqr" 2>/dev/null && echo -e "  [✓] Bash completion   : ${GREEN}$BASH_COMP_DIR/adbqr${RESET}" || true
+        sudo install -m 0644 "$SRC_BASH_COMP" "$BASH_COMP_DIR/jaaw" 2>/dev/null && echo -e "  [✓] Bash completion   : ${GREEN}$BASH_COMP_DIR/jaaw${RESET}" || true
     fi
 fi
 
@@ -226,10 +226,10 @@ if [ -f "$SRC_ZSH_COMP" ]; then
     ZSH_COMP_DIR="/usr/share/zsh/site-functions"
     if [ -w "$ZSH_COMP_DIR" ] 2>/dev/null; then
         mkdir -p "$ZSH_COMP_DIR"
-        install -m 0644 "$SRC_ZSH_COMP" "$ZSH_COMP_DIR/_adbqr" 2>/dev/null && echo -e "  [✓] Zsh completion    : ${GREEN}$ZSH_COMP_DIR/_adbqr${RESET}" || true
+        install -m 0644 "$SRC_ZSH_COMP" "$ZSH_COMP_DIR/_jaaw" 2>/dev/null && echo -e "  [✓] Zsh completion    : ${GREEN}$ZSH_COMP_DIR/_jaaw${RESET}" || true
     elif command -v sudo >/dev/null 2>&1; then
         sudo mkdir -p "$ZSH_COMP_DIR" 2>/dev/null || true
-        sudo install -m 0644 "$SRC_ZSH_COMP" "$ZSH_COMP_DIR/_adbqr" 2>/dev/null && echo -e "  [✓] Zsh completion    : ${GREEN}$ZSH_COMP_DIR/_adbqr${RESET}" || true
+        sudo install -m 0644 "$SRC_ZSH_COMP" "$ZSH_COMP_DIR/_jaaw" 2>/dev/null && echo -e "  [✓] Zsh completion    : ${GREEN}$ZSH_COMP_DIR/_jaaw${RESET}" || true
     fi
 fi
 
@@ -238,17 +238,17 @@ if [ -f "${SRC_FISH_COMP:-}" ]; then
     FISH_COMP_DIR="/usr/share/fish/vendor_completions.d"
     if [ -w "$FISH_COMP_DIR" ] 2>/dev/null; then
         mkdir -p "$FISH_COMP_DIR"
-        install -m 0644 "$SRC_FISH_COMP" "$FISH_COMP_DIR/adbqr.fish" 2>/dev/null && echo -e "  [✓] Fish completion   : ${GREEN}$FISH_COMP_DIR/adbqr.fish${RESET}" || true
+        install -m 0644 "$SRC_FISH_COMP" "$FISH_COMP_DIR/jaaw.fish" 2>/dev/null && echo -e "  [✓] Fish completion   : ${GREEN}$FISH_COMP_DIR/jaaw.fish${RESET}" || true
     elif command -v sudo >/dev/null 2>&1; then
         sudo mkdir -p "$FISH_COMP_DIR" 2>/dev/null || true
-        sudo install -m 0644 "$SRC_FISH_COMP" "$FISH_COMP_DIR/adbqr.fish" 2>/dev/null && echo -e "  [✓] Fish completion   : ${GREEN}$FISH_COMP_DIR/adbqr.fish${RESET}" || true
+        sudo install -m 0644 "$SRC_FISH_COMP" "$FISH_COMP_DIR/jaaw.fish" 2>/dev/null && echo -e "  [✓] Fish completion   : ${GREEN}$FISH_COMP_DIR/jaaw.fish${RESET}" || true
     fi
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}[✓] Instalasi adbqr selesai!${RESET}"
+echo -e "${GREEN}${BOLD}[✓] Instalasi jaaw selesai!${RESET}"
 echo -e "Pastikan ${CYAN}$PREFIX/bin${RESET} ada di PATH Anda, lalu jalankan:"
-echo -e "  ${BOLD}adbqr -w${RESET}      (Buka Menu Wizard Interaktif)"
-echo -e "  ${BOLD}adbqr -p${RESET}      (Scan QR Code Pairing Android)"
-echo -e "  ${BOLD}adbqr --help${RESET}  (Lihat semua opsi)"
+echo -e "  ${BOLD}jaaw -w${RESET}      (Buka Menu Wizard Interaktif)"
+echo -e "  ${BOLD}jaaw -p${RESET}      (Scan QR Code Pairing Android)"
+echo -e "  ${BOLD}jaaw --help${RESET}  (Lihat semua opsi)"
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# adbqr - Android Wireless Debugging Wizard & QR Pairer for Linux
+# jaaw - Jembatan Awakutu Android Wireless (Android Debug Bridge Wireless Companion)
 # Highly optimized for Fedora, Ubuntu, Arch, and Android 11-16.
 #
 # Features:
@@ -10,7 +10,7 @@
 # - Auto-connect immediately following pairing
 # - Optional scrcpy screen mirroring integration (--screen / -s)
 # - Desktop notifications via notify-send
-# - Smart device history cache in ~/.config/adbqr/
+# - Smart device history cache in ~/.config/jaaw/
 # - 1-Click USB-to-Wireless switch (adb tcpip 5555)
 # - Clean Ctrl+C / SIGINT signal cancellation
 # - Smooth terminal spinner and graphics protocol support (Kitty, iTerm2, ANSI)
@@ -19,7 +19,7 @@ set -euo pipefail
 
 # Ensure running on Linux
 if [ "$(uname)" != "Linux" ]; then
-    echo "Error: adbqr is designed specifically for Linux." >&2
+    echo "Error: jaaw is designed specifically for Linux." >&2
     exit 1
 fi
 
@@ -32,8 +32,9 @@ SCRCPY_CUSTOM_ARGS=()
 NAME=""
 CODE=""
 PAYLOAD=""
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/adbqr"
-HISTORY_FILE="$CONFIG_DIR/devices.tsv"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/jaaw"
+HISTORY_FILE="${HISTORY_FILE:-$CONFIG_DIR/devices.tsv}"
+ALIAS_FILE="${ALIAS_FILE:-$CONFIG_DIR/aliases.tsv}"
 
 # Colors and styling
 BOLD='\033[1m'
@@ -81,7 +82,7 @@ notify_desktop() {
     local title="$1"
     local msg="$2"
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send -a "adbqr" -i "phone" "$title" "$msg" 2>/dev/null || true
+        notify-send -a "jaaw" -i "phone" "$title" "$msg" 2>/dev/null || true
     fi
 }
 
@@ -158,6 +159,18 @@ get_wifi_ssid() {
     echo "$ssid"
 }
 
+
+# Safe adb connect helper (validates output because adb connect may return exit code 0 on failure)
+safe_adb_connect() {
+    local target="$1"
+    local output
+    output=$(adb connect "$target" 2>&1)
+    echo "$output"
+    if [[ "$output" == *"connected to "* ]] || [[ "$output" == *"already connected to "* ]]; then
+        return 0
+    fi
+    return 1
+}
 
 # Launch scrcpy if requested with smooth wireless optimizations
 maybe_launch_scrcpy() {
@@ -249,13 +262,30 @@ save_device_history() {
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
     local tmp_hist
-    tmp_hist=$(mktemp "${TMPDIR:-/tmp}/adbqr-hist.XXXXXX")
+    tmp_hist=$(mktemp "${TMPDIR:-/tmp}/jaaw-hist.XXXXXX")
     if [ -f "$HISTORY_FILE" ]; then
         # Remove existing entry for same IP to avoid duplicates
         awk -F'\t' -v target_ip="$ip" '$2 != target_ip' "$HISTORY_FILE" > "$tmp_hist" 2>/dev/null || true
     fi
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$timestamp" "$ip" "$port" "$model" "$os_ver" "$s_name" >> "$tmp_hist"
     mv "$tmp_hist" "$HISTORY_FILE"
+
+    # Also update last seen IP:Port in aliases.tsv if matching target or service name
+    if [ -f "$ALIAS_FILE" ]; then
+        local tmp_alias
+        tmp_alias=$(mktemp "${TMPDIR:-/tmp}/jaaw-alias-sync.XXXXXX")
+        awk -F'\t' -v s="$s_name" -v ip_port="$ip:$port" -v ip_addr="$ip" -v t="$timestamp" '
+        BEGIN { OFS="\t" }
+        NR==1 { print; next }
+        $1 ~ /^#/ { print; next }
+        {
+            if ((s != "" && $2 == s) || (s != "" && index($2, s) > 0) || (index($2, ip_addr) > 0)) {
+                $4 = ip_port
+                $5 = t
+            }
+            print
+        }' "$ALIAS_FILE" > "$tmp_alias" 2>/dev/null && mv "$tmp_alias" "$ALIAS_FILE" || rm -f "$tmp_alias" 2>/dev/null
+    fi
 }
 
 # Best-effort IPv4 prefix length on Linux
@@ -335,7 +365,7 @@ render_qr() {
 }
 
 # Real-time event-driven mDNS discovery with sub-100ms latency and spinner UI
-# Output variables: TARGET_ADDR, TARGET_MODEL, TARGET_ANDROID
+# Output variables: TARGET_ADDR, TARGET_MODEL, TARGET_ANDROID, TARGET_SERVICE
 stream_discover_mdns() {
     local service_type="$1"
     local target_name="${2:-}"
@@ -346,6 +376,7 @@ stream_discover_mdns() {
     TARGET_ADDR=""
     TARGET_MODEL=""
     TARGET_ANDROID=""
+    TARGET_SERVICE=""
 
     local spin_chars=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
     local spin_idx=0
@@ -355,7 +386,7 @@ stream_discover_mdns() {
     # 1. Event streaming using Avahi (Linux/Fedora)
     if command -v avahi-browse >/dev/null 2>&1; then
         local fifo="" browse_pid=""
-        fifo=$(mktemp -u "${TMPDIR:-/tmp}/adbqr-fifo.XXXXXX")
+        fifo=$(mktemp -u "${TMPDIR:-/tmp}/jaaw-fifo.XXXXXX")
         mkfifo "$fifo"
         exec 3<>"$fifo"
 
@@ -395,6 +426,7 @@ stream_discover_mdns() {
                         fi
 
                         TARGET_ADDR="$ip:$port"
+                        [ -n "$name" ] && [ -n "$type" ] && TARGET_SERVICE="$name.$type"
                         local parsed
                         parsed=$(parse_txt_record "$txt")
                         TARGET_MODEL="${parsed%%|*}"
@@ -421,16 +453,17 @@ stream_discover_mdns() {
     if adb mdns check >/dev/null 2>&1; then
         for _ in $(seq 1 "$timeout_sec"); do
             local res
-            res=$(adb mdns services 2>/dev/null | awk -v svc="$service_type" -v name="$target_name" '
-                $0 ~ svc {
-                    if (name == "" || index($1, name) > 0 || index($2, name) > 0) {
-                        print $3;
+            res=$(adb mdns services 2>/dev/null | awk -F'\t' -v svc="$service_type" -v name="$target_name" '
+                $2 ~ svc {
+                    if (name == "" || index($1, name) > 0) {
+                        print $3 "|" $1 "." $2;
                         exit;
                     }
                 }
             ')
             if [ -n "$res" ]; then
-                TARGET_ADDR="$res"
+                TARGET_ADDR="${res%%|*}"
+                TARGET_SERVICE="${res##*|}"
                 return 0
             fi
             sleep 1
@@ -445,32 +478,56 @@ auto_connect_device() {
     local target_ip="$1"
     local model="${2:-}"
     local os_ver="${3:-}"
+    local connect_service=""
     local connect_addr=""
 
     echo ""
-    info "Mencari port koneksi debugging (${CYAN}_adb-tls-connect._tcp${RESET})..."
+    info "Mencari service koneksi debugging (${CYAN}_adb-tls-connect._tcp${RESET})..."
 
     if stream_discover_mdns "_adb-tls-connect._tcp" "" "$target_ip" 10 "Menghubungkan otomatis..."; then
+        connect_service="$TARGET_SERVICE"
         connect_addr="$TARGET_ADDR"
         [ -n "$TARGET_MODEL" ] && model="$TARGET_MODEL"
         [ -n "$TARGET_ANDROID" ] && os_ver="$TARGET_ANDROID"
     fi
 
-    if [ -n "$connect_addr" ]; then
-        info "Menghubungkan ke ${BOLD}$connect_addr${RESET}..."
-        if adb connect "$connect_addr"; then
-            echo ""
-            success "Berhasil terhubung ke Android!"
-            if [ -n "$model" ] || [ -n "$os_ver" ]; then
-                echo -e "  📱 ${BOLD}Perangkat:${RESET} ${GREEN}${model:-Android Device}${RESET} (${CYAN}${os_ver:-Android}${RESET})"
-            fi
-            save_device_history "$target_ip" "${connect_addr##*:}" "$model" "$os_ver" ""
-            notify_desktop "Android Terhubung!" "${model:-Perangkat} ($os_ver) @ $connect_addr"
-            echo ""
-            adb devices -l
-            maybe_launch_scrcpy "$connect_addr"
-            return 0
+    local connected_target=""
+
+    # 1. Prioritaskan koneksi via mDNS TLS service name (adb-xxxx._adb-tls-connect._tcp)
+    if [ -n "$connect_service" ]; then
+        info "Menghubungkan via mDNS TLS: ${BOLD}$connect_service${RESET}..."
+        if safe_adb_connect "$connect_service"; then
+            connected_target="$connect_service"
         fi
+    fi
+
+    # 2. Fallback ke IP:Port jika koneksi mDNS service name gagal
+    if [ -z "$connected_target" ] && [ -n "$connect_addr" ]; then
+        info "Menghubungkan ke ${BOLD}$connect_addr${RESET}..."
+        if safe_adb_connect "$connect_addr"; then
+            connected_target="$connect_addr"
+        fi
+    fi
+
+    if [ -n "$connected_target" ]; then
+        echo ""
+        success "Berhasil terhubung ke Android!"
+        if [ -n "$model" ] || [ -n "$os_ver" ]; then
+            echo -e "  📱 ${BOLD}Perangkat:${RESET} ${GREEN}${model:-Android Device}${RESET} (${CYAN}${os_ver:-Android}${RESET})"
+        fi
+        save_device_history "$target_ip" "${connect_addr##*:}" "$model" "$os_ver" "$connect_service"
+        notify_desktop "Android Terhubung!" "${model:-Perangkat} ($os_ver) @ $connected_target"
+        local dev_alias
+        dev_alias=$(get_target_alias "$connected_target" 2>/dev/null || true)
+        if [ -n "$dev_alias" ]; then
+            echo -e "  🏷️  ${BOLD}Alias:${RESET} ${CYAN}${dev_alias}${RESET} ${DIM}(jaaw shell $dev_alias)${RESET}"
+        else
+            echo -e "  💡 ${DIM}Tip: Beri alias untuk perangkat ini: ${RESET}${BOLD}jaaw alias set <nama> $connected_target${RESET}"
+        fi
+        echo ""
+        adb devices -l
+        maybe_launch_scrcpy "$connected_target"
+        return 0
     fi
 
     # Fallback to manual port prompt if mDNS connect didn't arrive
@@ -483,7 +540,7 @@ auto_connect_device() {
         local full_addr="$target_ip:$manual_port"
         [[ "$manual_port" == *":"* ]] && full_addr="$manual_port"
         info "Menghubungkan ke $full_addr ..."
-        if adb connect "$full_addr"; then
+        if safe_adb_connect "$full_addr"; then
             save_device_history "$target_ip" "$manual_port" "$model" "$os_ver" ""
             notify_desktop "Android Terhubung!" "${model:-Perangkat} @ $full_addr"
             echo ""
@@ -500,7 +557,7 @@ flow_qr_pairing() {
     local current_ssid
     current_ssid=$(get_wifi_ssid)
 
-    NAME="adbqr-$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
+    NAME="jaaw-$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
     CODE=$(( (RANDOM * 32768 + RANDOM) % 900000 + 100000 ))
     PAYLOAD="WIFI:T:ADB;S:$NAME;P:$CODE;;"
 
@@ -569,20 +626,34 @@ flow_quick_connect() {
 
     local devices=()
     local addrs=()
+    local services=()
     local models=()
 
     if command -v avahi-browse >/dev/null 2>&1; then
         # shellcheck disable=SC2034
         while IFS=';' read -r status iface proto name type domain host ip port txt; do
             if [ "$status" = "=" ] && [ "$proto" = "IPv4" ] && [ -n "$ip" ] && [ -n "$port" ]; then
+                # Deduplicate by ip:port
+                local dup=false
+                for existing_addr in "${addrs[@]}"; do
+                    if [ "$existing_addr" = "$ip:$port" ]; then
+                        dup=true
+                        break
+                    fi
+                done
+                [ "$dup" = true ] && continue
+
                 local parsed
                 parsed=$(parse_txt_record "$txt")
                 local m="${parsed%%|*}"
                 local a
                 a=$(api_to_version "${parsed##*|}")
-                local label="${m:-Device} ($a) @ $ip:$port"
+                local svc=""
+                [ -n "$name" ] && [ -n "$type" ] && svc="$name.$type"
+                local label="${m:-Device} ($a) @ ${svc:-$ip:$port}"
                 devices+=("$label")
                 addrs+=("$ip:$port")
+                services+=("$svc")
                 models+=("${m:-Unknown}")
             fi
         done < <(avahi-browse -r -p -t "_adb-tls-connect._tcp" 2>/dev/null || true)
@@ -603,7 +674,7 @@ flow_quick_connect() {
         read -r manual_addr || true
         if [ -n "$manual_addr" ]; then
             info "Menghubungkan ke $manual_addr ..."
-            if adb connect "$manual_addr"; then
+            if safe_adb_connect "$manual_addr"; then
                 notify_desktop "Android Terhubung!" "Alamat: $manual_addr"
                 maybe_launch_scrcpy "$manual_addr"
             fi
@@ -629,20 +700,44 @@ flow_quick_connect() {
     if [ -z "$choice" ]; then
         for i in "${!addrs[@]}"; do
             local addr="${addrs[$i]}"
-            info "Connecting $addr ..."
-            if adb connect "$addr"; then
-                save_device_history "${addr%%:*}" "${addr##*:}" "${models[$i]}" "" ""
-                connected_target="$addr"
+            local svc="${services[$i]:-}"
+            local connected=false
+            if [ -n "$svc" ]; then
+                info "Connecting via mDNS TLS: $svc ..."
+                if safe_adb_connect "$svc"; then
+                    save_device_history "${addr%%:*}" "${addr##*:}" "${models[$i]}" "" "$svc"
+                    connected_target="$svc"
+                    connected=true
+                fi
+            fi
+            if [ "$connected" = false ]; then
+                info "Connecting $addr ..."
+                if safe_adb_connect "$addr"; then
+                    save_device_history "${addr%%:*}" "${addr##*:}" "${models[$i]}" "" ""
+                    connected_target="$addr"
+                fi
             fi
         done
     else
         local sel=$((choice - 1))
         if [ "$sel" -ge 0 ] && [ "$sel" -lt "${#addrs[@]}" ]; then
             local addr="${addrs[$sel]}"
-            info "Connecting $addr ..."
-            if adb connect "$addr"; then
-                save_device_history "${addr%%:*}" "${addr##*:}" "${models[$sel]}" "" ""
-                connected_target="$addr"
+            local svc="${services[$sel]:-}"
+            local connected=false
+            if [ -n "$svc" ]; then
+                info "Connecting via mDNS TLS: $svc ..."
+                if safe_adb_connect "$svc"; then
+                    save_device_history "${addr%%:*}" "${addr##*:}" "${models[$sel]}" "" "$svc"
+                    connected_target="$svc"
+                    connected=true
+                fi
+            fi
+            if [ "$connected" = false ]; then
+                info "Connecting $addr ..."
+                if safe_adb_connect "$addr"; then
+                    save_device_history "${addr%%:*}" "${addr##*:}" "${models[$sel]}" "" ""
+                    connected_target="$addr"
+                fi
             fi
         else
             warn "Pilihan tidak valid."
@@ -703,7 +798,7 @@ flow_usb_to_wireless() {
         sleep 1
 
         info "Menghubungkan via Wi-Fi ke $phone_ip:5555 ..."
-        if adb connect "$phone_ip:5555"; then
+        if safe_adb_connect "$phone_ip:5555"; then
             echo ""
             success "Berhasil beralih ke mode Wireless ADB!"
             echo -e "  🎉 ${BOLD}Anda sekarang dapat mencabut kabel USB!${RESET}"
@@ -768,6 +863,650 @@ flow_history() {
         printf "  %-20s %-16s %-8s %-20s %-14s\n" "$t" "$ip" "$port" "$model" "$os"
     done < "$HISTORY_FILE"
     echo ""
+}
+
+# ==============================================================================
+# Device Alias Management & Smart Wrapper
+# ==============================================================================
+
+parse_adb_device_line() {
+    local line="$1"
+    PARSED_DEV_SERIAL=""
+    PARSED_DEV_STATUS=""
+    PARSED_DEV_MODEL=""
+    if [[ "$line" =~ ^(.+)[[:space:]]+(device|offline|unauthorized|authorizing|connecting|no[[:space:]]+permissions|recovery|sideload|bootloader)([[:space:]]+.*)?$ ]]; then
+        PARSED_DEV_SERIAL="${BASH_REMATCH[1]}"
+        PARSED_DEV_STATUS="${BASH_REMATCH[2]}"
+        local rest="${BASH_REMATCH[3]:-}"
+        if [[ "$rest" =~ model:([^[:space:]]+) ]]; then
+            PARSED_DEV_MODEL="${BASH_REMATCH[1]}"
+        fi
+        return 0
+    fi
+    return 1
+}
+
+init_alias_file() {
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+    if [ ! -f "$ALIAS_FILE" ]; then
+        printf "# ALIAS\tTARGET_IDENTIFIER\tDEVICE_MODEL\tLAST_SEEN_IP_PORT\tUPDATED_AT\n" > "$ALIAS_FILE"
+    fi
+}
+
+get_alias_target() {
+    local alias_name="${1:-}"
+    [ -n "$alias_name" ] || return 1
+    [ -f "$ALIAS_FILE" ] || return 1
+    local target
+    target=$(awk -F'\t' -v a="$alias_name" '$1 !~ /^#/ && $1 == a { print $2; exit }' "$ALIAS_FILE")
+    [ -n "$target" ] || return 1
+
+    # Smart dynamic resolution against currently connected ADB devices
+    local dev_output
+    dev_output=$(adb devices -l 2>/dev/null || true)
+    if [ -n "$dev_output" ]; then
+        local found_serial=""
+        local candidate_serial=""
+        local base_id="$target"
+        [[ "$base_id" =~ ^(adb-[a-zA-Z0-9_-]+) ]] && base_id="${BASH_REMATCH[1]}"
+
+        while IFS= read -r dev_line; do
+            if parse_adb_device_line "$dev_line"; then
+                if [ "$PARSED_DEV_SERIAL" = "$target" ]; then
+                    found_serial="$PARSED_DEV_SERIAL"
+                    break
+                fi
+                if [ -n "$base_id" ] && [[ "$PARSED_DEV_SERIAL" == *"$base_id"* ]]; then
+                    candidate_serial="$PARSED_DEV_SERIAL"
+                elif [[ "$target" == *"$PARSED_DEV_SERIAL"* ]] || [[ "$PARSED_DEV_SERIAL" == *"$target"* ]]; then
+                    candidate_serial="$PARSED_DEV_SERIAL"
+                fi
+            fi
+        done < <(echo "$dev_output" | tail -n +2)
+
+        if [ -n "$found_serial" ]; then
+            echo "$found_serial"
+            return 0
+        elif [ -n "$candidate_serial" ]; then
+            echo "$candidate_serial"
+            return 0
+        fi
+    fi
+
+    echo "$target"
+}
+
+get_target_alias() {
+    local target="${1:-}"
+    [ -n "$target" ] || return 1
+    [ -f "$ALIAS_FILE" ] || return 1
+    local base_id="$target"
+    [[ "$base_id" =~ ^(adb-[a-zA-Z0-9_-]+) ]] && base_id="${BASH_REMATCH[1]}"
+
+    awk -F'\t' -v t="$target" -v b="$base_id" '
+    $1 !~ /^#/ {
+        if ($2 == t || $4 == t || (b != "" && index($2, b) > 0) || (index($2, t) > 0 && t != "") || (index(t, $2) > 0 && $2 != "")) {
+            print $1
+            exit
+        }
+    }' "$ALIAS_FILE" | grep .
+}
+
+resolve_target() {
+    local input="${1:-}"
+    [ -n "$input" ] || die "Target serial atau nama alias harus ditentukan."
+    local target
+    if target=$(get_alias_target "$input" 2>/dev/null); then
+        echo "$target"
+        return 0
+    fi
+    echo "$input"
+}
+
+set_device_alias() {
+    local alias_name="${1:-}"
+    local target="${2:-}"
+    local model="${3:-}"
+    local ip_port="${4:-}"
+
+    init_alias_file
+
+    if [ -z "$alias_name" ]; then
+        echo -ne "Masukkan nama alias (contoh: poco, tab, pixel): "
+        read -r alias_name || true
+    fi
+
+    [ -n "$alias_name" ] || die "Nama alias tidak boleh kosong."
+
+    if ! [[ "$alias_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        die "Nama alias hanya boleh menggunakan huruf, angka, titik, minus, atau underscore."
+    fi
+
+    # Interactive picker if target not supplied
+    if [ -z "$target" ]; then
+        local cand_targets=()
+        local cand_labels=()
+        local cand_models=()
+        local cand_addrs=()
+
+        # Connected ADB devices
+        while IFS= read -r line; do
+            if parse_adb_device_line "$line"; then
+                local serial="$PARSED_DEV_SERIAL"
+                local status="$PARSED_DEV_STATUS"
+                local m="${PARSED_DEV_MODEL:-Device}"
+                cand_targets+=("$serial")
+                cand_models+=("$m")
+                cand_addrs+=("")
+                cand_labels+=("ADB Connected: ${BOLD}$serial${RESET} (${GREEN}$m${RESET} - $status)")
+            fi
+        done < <(adb devices -l 2>/dev/null | tail -n +2)
+
+        # History devices
+        if [ -f "$HISTORY_FILE" ]; then
+            while IFS=$'\t' read -r t ip port m os s_name; do
+                [ -n "$ip" ] || continue
+                local t_id="${s_name:-$ip:$port}"
+                local dup=false
+                for ct in "${cand_targets[@]}"; do
+                    if [ "$ct" = "$t_id" ]; then dup=true; break; fi
+                done
+                if [ "$dup" = false ]; then
+                    cand_targets+=("$t_id")
+                    cand_models+=("${m:-Device}")
+                    cand_addrs+=("$ip:$port")
+                    cand_labels+=("Riwayat: ${BOLD}$t_id${RESET} (${GREEN}${m:-Device}${RESET} @ $ip:$port)")
+                fi
+            done < "$HISTORY_FILE"
+        fi
+
+        if [ ${#cand_targets[@]} -gt 0 ]; then
+            echo -e "\n${BOLD}Pilih perangkat untuk alias '${CYAN}$alias_name${RESET}':"
+            local idx=1
+            for lbl in "${cand_labels[@]}"; do
+                echo -e "  ${BOLD}[$idx]${RESET} $lbl"
+                idx=$((idx + 1))
+            done
+            echo -e "  ${BOLD}[m]${RESET} Masukkan target serial / mDNS service / IP:Port manual"
+            echo ""
+            echo -ne "Pilih [1-${#cand_targets[@]}, m]: "
+            local sel
+            read -r sel || true
+            if [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "${#cand_targets[@]}" ]; then
+                local s_idx=$((sel - 1))
+                target="${cand_targets[$s_idx]}"
+                [ -z "$model" ] && model="${cand_models[$s_idx]}"
+                [ -z "$ip_port" ] && ip_port="${cand_addrs[$s_idx]}"
+            else
+                echo -ne "Masukkan serial/mDNS service/IP:Port: "
+                read -r target || true
+            fi
+        else
+            echo -ne "Masukkan serial/mDNS service/IP:Port: "
+            read -r target || true
+        fi
+    fi
+
+    [ -n "$target" ] || die "Target serial perangkat tidak boleh kosong."
+
+    # Try to resolve model / IP:Port if missing
+    if [ -z "$model" ] || [ "$model" = "Unknown" ]; then
+        if [ -f "$HISTORY_FILE" ]; then
+            local hist_match
+            hist_match=$(awk -F'\t' -v t="$target" '$6 == t || ($2 ":" $3) == t || $2 == t { print $4 "\t" $2 ":" $3; exit }' "$HISTORY_FILE")
+            if [ -n "$hist_match" ]; then
+                [ -z "$model" ] && model=$(echo "$hist_match" | cut -f1)
+                [ -z "$ip_port" ] && ip_port=$(echo "$hist_match" | cut -f2)
+            fi
+        fi
+        if [ -z "$model" ] || [ "$model" = "Unknown" ]; then
+            local dev_line
+            dev_line=$(adb devices -l 2>/dev/null | grep -F "$target" | head -n 1 || true)
+            if [[ "$dev_line" =~ model:([^[:space:]]+) ]]; then
+                model="${BASH_REMATCH[1]}"
+            fi
+        fi
+    fi
+
+    if [ -z "$ip_port" ]; then
+        if [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+            ip_port="$target"
+        fi
+    fi
+
+    local now
+    now=$(date '+%Y-%m-%d %H:%M:%S')
+
+    local tmp_file
+    tmp_file=$(mktemp "${TMPDIR:-/tmp}/jaaw-alias.XXXXXX")
+    if [ -f "$ALIAS_FILE" ]; then
+        awk -F'\t' -v a="$alias_name" 'NR==1 || ($1 !~ /^#/ && $1 != a)' "$ALIAS_FILE" > "$tmp_file" 2>/dev/null || true
+    else
+        printf "# ALIAS\tTARGET_IDENTIFIER\tDEVICE_MODEL\tLAST_SEEN_IP_PORT\tUPDATED_AT\n" > "$tmp_file"
+    fi
+
+    printf "%s\t%s\t%s\t%s\t%s\n" "$alias_name" "$target" "${model:-Unknown}" "${ip_port:--}" "$now" >> "$tmp_file"
+    mv "$tmp_file" "$ALIAS_FILE"
+
+    success "Alias '${BOLD}${CYAN}$alias_name${RESET}' berhasil disimpan -> ${BOLD}$target${RESET} (${GREEN}${model:-Unknown}${RESET})"
+}
+
+remove_device_alias() {
+    local alias_name="${1:-}"
+    [ -n "$alias_name" ] || die "Nama alias harus ditentukan (contoh: jaaw alias rm poco)."
+    [ -f "$ALIAS_FILE" ] || die "Belum ada alias yang tersimpan."
+
+    if ! grep -q -E "^${alias_name}[[:space:]]" "$ALIAS_FILE" 2>/dev/null; then
+        die "Alias '$alias_name' tidak ditemukan."
+    fi
+
+    local tmp_file
+    tmp_file=$(mktemp "${TMPDIR:-/tmp}/jaaw-alias.XXXXXX")
+    awk -F'\t' -v a="$alias_name" 'NR==1 || ($1 !~ /^#/ && $1 != a)' "$ALIAS_FILE" > "$tmp_file"
+    mv "$tmp_file" "$ALIAS_FILE"
+
+    success "Alias '${BOLD}${CYAN}$alias_name${RESET}' berhasil dihapus."
+}
+
+list_device_aliases() {
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${GREEN}${BOLD}                    DAFTAR ALIAS PERANGKAT                        ${RESET}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo ""
+
+    if [ ! -f "$ALIAS_FILE" ] || [ "$(grep -v '^#' "$ALIAS_FILE" 2>/dev/null | grep -c . || true)" -eq 0 ]; then
+        info "Belum ada alias yang didaftarkan."
+        echo -e "  Gunakan: ${BOLD}jaaw alias set <nama> [target]${RESET} untuk membuat alias baru."
+        echo -e "  Contoh : ${BOLD}jaaw alias set poco${RESET}"
+        echo ""
+        return 0
+    fi
+
+    printf "  %-12s %-16s %-20s %-40s\n" "ALIAS" "MODEL" "IP:PORT" "TARGET / REAL SERIAL"
+    printf "  %-12s %-16s %-20s %-40s\n" "------------" "----------------" "--------------------" "----------------------------------------"
+
+    while IFS=$'\t' read -r a target m ip_port updated; do
+        [[ "$a" =~ ^# ]] && continue
+        [ -n "$a" ] || continue
+        printf "  ${CYAN}%-12s${RESET} ${GREEN}%-16s${RESET} %-20s %-40s\n" "$a" "${m:-Unknown}" "${ip_port:--}" "$target"
+    done < "$ALIAS_FILE"
+    echo ""
+    echo -e "  ${DIM}Tip: Jalankan 'jaaw shell <alias>' atau 'jaaw exec <alias> <perintah>'${RESET}"
+    echo ""
+}
+
+flow_alias() {
+    local subcmd="${1:-list}"
+    shift || true
+    case "$subcmd" in
+        set|add)
+            set_device_alias "$@"
+            ;;
+        rm|remove|del|delete)
+            remove_device_alias "$@"
+            ;;
+        get)
+            local target
+            target=$(get_alias_target "${1:-}" 2>/dev/null) || return 1
+            echo "$target"
+            ;;
+        list|ls)
+            list_device_aliases
+            ;;
+        *)
+            if [ -n "$subcmd" ]; then
+                local target
+                if target=$(get_alias_target "$subcmd" 2>/dev/null); then
+                    info "Alias ${CYAN}$subcmd${RESET} -> ${BOLD}$target${RESET}"
+                    return 0
+                fi
+            fi
+            echo "Usage: jaaw alias [set|list|rm|get] [ARGS...]" >&2
+            return 1
+            ;;
+    esac
+}
+
+flow_devices() {
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${GREEN}${BOLD}                 PERANGKAT TERHUBUNG (ADB DEVICES)                ${RESET}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo ""
+
+    local raw_devices
+    raw_devices=$(adb devices -l 2>/dev/null | tail -n +2 || true)
+
+    if [ -z "$raw_devices" ] || [ "$(echo "$raw_devices" | grep -c . || true)" -eq 0 ]; then
+        warn "Tidak ada perangkat Android yang terhubung saat ini."
+        echo -e "  Hubungkan dengan: ${BOLD}jaaw connect${RESET} atau ${BOLD}jaaw pair${RESET}"
+        echo ""
+        return 0
+    fi
+
+    printf "  %-12s %-16s %-10s %-22s %-40s\n" "ALIAS" "MODEL" "STATUS" "IP:PORT" "REAL SERIAL / SERVICE"
+    printf "  %-12s %-16s %-10s %-22s %-40s\n" "------------" "----------------" "----------" "----------------------" "----------------------------------------"
+
+    while IFS= read -r line; do
+        if ! parse_adb_device_line "$line"; then
+            continue
+        fi
+        local serial="$PARSED_DEV_SERIAL"
+        local status="$PARSED_DEV_STATUS"
+        local model="${PARSED_DEV_MODEL:--}"
+
+        local alias_name="-"
+        local ip_port="-"
+
+        if [ -f "$ALIAS_FILE" ]; then
+            while IFS=$'\t' read -r a t m i_p u; do
+                [[ "$a" =~ ^# ]] && continue
+                [ -n "$a" ] || continue
+                local base_t="$t"
+                [[ "$base_t" =~ ^(adb-[a-zA-Z0-9_-]+) ]] && base_t="${BASH_REMATCH[1]}"
+                if [ "$t" = "$serial" ] || [ "$i_p" = "$serial" ] || [[ "$serial" == *"$base_t"* ]]; then
+                    alias_name="$a"
+                    [ "$ip_port" = "-" ] && [ -n "$i_p" ] && [ "$i_p" != "-" ] && ip_port="$i_p"
+                    [ "$model" = "-" ] && [ -n "$m" ] && [ "$m" != "Unknown" ] && model="$m"
+                    break
+                fi
+            done < "$ALIAS_FILE"
+        fi
+
+        if [ "$ip_port" = "-" ]; then
+            if [[ "$serial" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+                ip_port="$serial"
+            elif [ -f "$HISTORY_FILE" ]; then
+                local hist_ip
+                hist_ip=$(awk -F'\t' -v s="$serial" '($6 != "" && ($6 == s || index(s, $6) > 0 || index($6, s) > 0)) { print $2 ":" $3; exit }' "$HISTORY_FILE" 2>/dev/null || true)
+                [ -n "$hist_ip" ] && ip_port="$hist_ip"
+            fi
+        fi
+
+        local status_color="$GREEN"
+        if [ "$status" != "device" ]; then
+            status_color="$YELLOW"
+        fi
+
+        local alias_disp="${CYAN}$alias_name${RESET}"
+        [ "$alias_name" = "-" ] && alias_disp="${DIM}-${RESET}"
+
+        printf "  %-21b ${BOLD}%-16s${RESET} ${status_color}%-10s${RESET} %-22s %-40s\n" \
+            "$alias_disp" "$model" "$status" "$ip_port" "$serial"
+
+    done <<< "$raw_devices"
+
+    echo ""
+}
+
+flow_exec() {
+    [ $# -ge 2 ] || die "Penggunaan: jaaw exec <alias|target> <perintah...>\nContoh: jaaw exec poco shell ls /sdcard"
+    local target
+    target=$(resolve_target "$1")
+    shift
+    exec adb -s "$target" "$@"
+}
+
+flow_shell() {
+    [ $# -ge 1 ] || die "Penggunaan: jaaw shell <alias|target> [args...]\nContoh: jaaw shell poco"
+    local target
+    target=$(resolve_target "$1")
+    shift
+    exec adb -s "$target" shell "$@"
+}
+
+flow_scrcpy() {
+    [ $# -ge 1 ] || die "Penggunaan: jaaw scrcpy <alias|target> [scrcpy-args...]\nContoh: jaaw scrcpy poco -b 4M"
+    local target
+    target=$(resolve_target "$1")
+    shift
+    LAUNCH_SCRCPY=true
+    if [ $# -gt 0 ]; then
+        SCRCPY_CUSTOM_ARGS+=("$@")
+    fi
+    maybe_launch_scrcpy "$target"
+}
+
+flow_use() {
+    local alias_name="${1:-}"
+    if [ -z "$alias_name" ]; then
+        if [ ! -f "$ALIAS_FILE" ] || [ "$(grep -v '^#' "$ALIAS_FILE" 2>/dev/null | grep -c . || true)" -eq 0 ]; then
+            die "Belum ada alias terdaftar. Buat alias dengan: jaaw alias set <nama>"
+        fi
+        echo -e "${BOLD}Pilih alias untuk digunakan sebagai target aktif:${RESET}"
+        local list=()
+        while IFS=$'\t' read -r a t m ip_port u; do
+            [[ "$a" =~ ^# ]] && continue
+            [ -n "$a" ] || continue
+            list+=("$a")
+        done < "$ALIAS_FILE"
+        local idx=1
+        for a in "${list[@]}"; do
+            echo "  [$idx] $a"
+            idx=$((idx + 1))
+        done
+        echo -ne "Pilih nomor [1-${#list[@]}]: "
+        local sel
+        read -r sel || true
+        if [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "${#list[@]}" ]; then
+            alias_name="${list[$((sel-1))]}"
+        else
+            die "Pilihan tidak valid."
+        fi
+    fi
+
+    local target
+    target=$(resolve_target "$alias_name")
+
+    echo "export ANDROID_SERIAL=\"$target\""
+    echo -e "${GREEN}[✓] Target aktif diatur ke '${CYAN}${alias_name}${RESET}${GREEN}' (${BOLD}${target}${RESET}${GREEN})${RESET}" >&2
+    echo -e "${DIM}Gunakan di sesi shell: ${BOLD}eval \"\$(jaaw use $alias_name)\"${RESET}" >&2
+}
+
+flow_init() {
+    local sh_type="${1:-}"
+    if [ -z "$sh_type" ]; then
+        if [ -n "${ZSH_VERSION:-}" ] || [[ "${SHELL:-}" == *"zsh"* ]]; then
+            sh_type="zsh"
+        elif [ -n "${FISH_VERSION:-}" ] || [[ "${SHELL:-}" == *"fish"* ]]; then
+            sh_type="fish"
+        else
+            sh_type="bash"
+        fi
+    fi
+
+    local self_bin
+    self_bin=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || command -v jaaw 2>/dev/null || echo "/usr/local/bin/jaaw")
+
+    case "$sh_type" in
+        zsh)
+            cat <<EOF
+# jaaw smart adb wrapper & completion for Zsh
+adb() {
+    local -a adb_args=()
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            -s)
+                if [ \$# -ge 2 ]; then
+                    local real_target
+                    real_target=\$(command jaaw alias get "\$2" 2>/dev/null || "$self_bin" alias get "\$2" 2>/dev/null || echo "\$2")
+                    adb_args+=("-s" "\$real_target")
+                    shift 2
+                else
+                    adb_args+=("\$1")
+                    shift
+                fi
+                ;;
+            -s*)
+                local target="\${1#-s}"
+                local real_target
+                real_target=\$(command jaaw alias get "\$target" 2>/dev/null || "$self_bin" alias get "\$target" 2>/dev/null || echo "\$target")
+                adb_args+=("-s\$real_target")
+                shift
+                ;;
+            *)
+                adb_args+=("\$1")
+                shift
+                ;;
+        esac
+    done
+    command adb "\${adb_args[@]}"
+}
+
+_jaaw_aliases() {
+    local alias_file="\${XDG_CONFIG_HOME:-\$HOME/.config}/jaaw/aliases.tsv"
+    if [[ -f "\$alias_file" ]]; then
+        local -a dev_aliases
+        while IFS=\$'\t' read -r a target m ip_port updated; do
+            [[ "\$a" =~ ^# ]] && continue
+            [[ -n "\$a" ]] && dev_aliases+=("\$a:\${m:-Device} (\$target)")
+        done < "\$alias_file"
+        _describe -t aliases 'jaaw alias' dev_aliases
+    fi
+}
+
+_adb_device_serial() {
+    _jaaw_aliases
+    local -a raw_devices
+    local line dev_regex
+    dev_regex="^(.+)[[:space:]]+(device|offline|unauthorized|recovery)"
+    while IFS= read -r line; do
+        [[ -z "\$line" || "\$line" =~ ^List ]] && continue
+        if [[ "\$line" =~ \$dev_regex ]]; then
+            raw_devices+=("\${match[1]}")
+        fi
+    done < <(command adb devices 2>/dev/null)
+    if (( \${#raw_devices} > 0 )); then
+        _describe -t devices 'connected adb device' raw_devices
+    fi
+}
+
+_jaaw_adb_complete() {
+    if [[ "\$words[CURRENT-1]" == "-s" ]]; then
+        _adb_device_serial
+        return
+    fi
+    if (( \$+functions[_adb] )); then
+        _adb "\$@"
+    fi
+}
+
+if (( \$+functions[compdef] )); then
+    local zsh_adb_builtin
+    for zsh_adb_builtin in /usr/share/zsh/*/functions/_adb; do
+        if [[ -f "\$zsh_adb_builtin" ]]; then
+            source "\$zsh_adb_builtin" 2>/dev/null || true
+            compdef _adb adb 2>/dev/null || true
+            break
+        fi
+    done
+    if ! (( \$+functions[_adb] )); then
+        compdef _jaaw_adb_complete adb 2>/dev/null || true
+    fi
+fi
+EOF
+            ;;
+        bash)
+            cat <<EOF
+# jaaw smart adb wrapper & completion for Bash
+adb() {
+    local -a adb_args=()
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            -s)
+                if [ \$# -ge 2 ]; then
+                    local real_target
+                    real_target=\$(command jaaw alias get "\$2" 2>/dev/null || "$self_bin" alias get "\$2" 2>/dev/null || echo "\$2")
+                    adb_args+=("-s" "\$real_target")
+                    shift 2
+                else
+                    adb_args+=("\$1")
+                    shift
+                fi
+                ;;
+            -s*)
+                local target="\${1#-s}"
+                local real_target
+                real_target=\$(command jaaw alias get "\$target" 2>/dev/null || "$self_bin" alias get "\$target" 2>/dev/null || echo "\$target")
+                adb_args+=("-s\$real_target")
+                shift
+                ;;
+            *)
+                adb_args+=("\$1")
+                shift
+                ;;
+        esac
+    done
+    command adb "\${adb_args[@]}"
+}
+
+_jaaw_adb_complete_bash() {
+    local cur prev
+    cur="\${COMP_WORDS[COMP_CWORD]}"
+    prev="\${COMP_WORDS[COMP_CWORD-1]}"
+    if [ "\$prev" = "-s" ]; then
+        local aliases=""
+        local alias_file="\${XDG_CONFIG_HOME:-\$HOME/.config}/jaaw/aliases.tsv"
+        if [ -f "\$alias_file" ]; then
+            aliases=\$(awk -F'\t' '\$1 !~ /^#/ && NF {print \$1}' "\$alias_file" 2>/dev/null | tr '\n' ' ')
+        fi
+        local devices
+        devices=\$(command adb devices 2>/dev/null | awk 'NR>1 && NF>=2 {print \$1}')
+        COMPREPLY=( \$(compgen -W "\${aliases} \${devices}" -- "\${cur}") )
+        return 0
+    fi
+    if declare -F _adb >/dev/null 2>&1; then
+        _adb "\$@"
+    fi
+}
+if declare -F complete >/dev/null 2>&1; then
+    complete -F _jaaw_adb_complete_bash adb
+fi
+EOF
+            ;;
+        fish)
+            cat <<EOF
+# jaaw smart adb wrapper for Fish
+function adb --wraps adb
+    set -l new_args
+    set -l skip 0
+    set -l total (count \$argv)
+    for i in (seq 1 \$total)
+        if test \$skip -gt 0
+            set skip (math \$skip - 1)
+            continue
+        end
+        set -l arg \$argv[\$i]
+        if test "\$arg" = "-s"
+            set -l next_i (math \$i + 1)
+            if test \$next_i -le \$total
+                set -l target \$argv[\$next_i]
+                set -l real_target (command jaaw alias get "\$target" 2>/dev/null; or "$self_bin" alias get "\$target" 2>/dev/null; or echo "\$target")
+                set -a new_args "-s" "\$real_target"
+                set skip 1
+            else
+                set -a new_args "\$arg"
+            end
+        else
+            set -a new_args "\$arg"
+        end
+    end
+    command adb \$new_args
+end
+
+function __jaaw_adb_aliases
+    set -l alias_file "\$HOME/.config/jaaw/aliases.tsv"
+    if test -f "\$alias_file"
+        awk -F'\t' '\$1 !~ /^#/ && NF {printf "%s\t%s (%s)\n", \$1, \$3, \$2}' "\$alias_file" 2>/dev/null
+    end
+end
+complete -c adb -s s -a "(__jaaw_adb_aliases)"
+EOF
+            ;;
+        *)
+            echo "Shell '$sh_type' tidak didukung. Pilihan: bash, zsh, fish" >&2
+            return 1
+            ;;
+    esac
 }
 
 # Mode 6: Diagnostics & Fedora health check
@@ -853,7 +1592,7 @@ flow_reset_adb() {
 # Mode 8: Self-updater from GitHub
 flow_update() {
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "${GREEN}${BOLD}                   MEMERIKSA PEMBARUAN ADBQR                      ${RESET}"
+    echo -e "${GREEN}${BOLD}                   MEMERIKSA PEMBARUAN JAAW                       ${RESET}"
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
 
@@ -862,8 +1601,8 @@ flow_update() {
     fi
 
     info "Memeriksa versi terbaru dari GitHub Releases..."
-    local api_url="https://api.github.com/repos/neflalabs/adbqr/releases/latest"
-    local raw_base="https://raw.githubusercontent.com/neflalabs/adbqr"
+    local api_url="https://api.github.com/repos/neflalabs/jaaw/releases/latest"
+    local raw_base="https://raw.githubusercontent.com/neflalabs/jaaw"
     local remote_ver=""
     local download_ref="main"
 
@@ -880,10 +1619,10 @@ flow_update() {
     # 2. Fallback to checking VERSION in raw main script if GitHub Releases not yet published
     local remote_content=""
     if [ -z "$remote_ver" ]; then
-        remote_content=$(curl -fsSL "$raw_base/main/bin/adbqr" 2>/dev/null || true)
+        remote_content=$(curl -fsSL "$raw_base/main/bin/jaaw" 2>/dev/null || true)
         remote_ver=$(echo "$remote_content" | grep '^VERSION=' | head -n 1 | cut -d'"' -f2 || true)
     else
-        remote_content=$(curl -fsSL "$raw_base/${download_ref}/bin/adbqr" 2>/dev/null || true)
+        remote_content=$(curl -fsSL "$raw_base/${download_ref}/bin/jaaw" 2>/dev/null || true)
     fi
 
     if [ -z "$remote_ver" ] || [ -z "$remote_content" ]; then
@@ -895,18 +1634,18 @@ flow_update() {
     echo ""
 
     if [ "$VERSION" = "$remote_ver" ]; then
-        success "adbqr sudah dalam versi terbaru (${GREEN}$VERSION${RESET}). Tidak ada pembaruan."
+        success "jaaw sudah dalam versi terbaru (${GREEN}$VERSION${RESET}). Tidak ada pembaruan."
         return 0
     fi
 
     info "Mengunduh pembaruan versi ${GREEN}$remote_ver${RESET} (ref: $download_ref)..."
 
     local tmp_dir
-    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/adbqr-update.XXXXXX")
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/jaaw-update.XXXXXX")
     # shellcheck disable=SC2064
     trap "rm -rf '$tmp_dir' 2>/dev/null || true" RETURN
 
-    local tmp_bin="$tmp_dir/adbqr"
+    local tmp_bin="$tmp_dir/jaaw"
     echo "$remote_content" > "$tmp_bin"
     chmod +x "$tmp_bin"
 
@@ -917,9 +1656,9 @@ flow_update() {
 
     # Find the target binary location
     local target_bin
-    target_bin=$(command -v adbqr 2>/dev/null || true)
+    target_bin=$(command -v jaaw 2>/dev/null || true)
     if [ -z "$target_bin" ] || [ ! -f "$target_bin" ]; then
-        target_bin="/usr/local/bin/adbqr"
+        target_bin="/usr/local/bin/jaaw"
     fi
 
     # Resolve symlinks if needed
@@ -927,7 +1666,7 @@ flow_update() {
         target_bin=$(readlink -f "$target_bin" 2>/dev/null || echo "$target_bin")
     fi
 
-    info "Memasang adbqr ke $target_bin ..."
+    info "Memasang jaaw ke $target_bin ..."
     if [ -w "$target_bin" ] || [ -w "$(dirname "$target_bin")" ]; then
         install -m 0755 "$tmp_bin" "$target_bin"
     elif command -v sudo >/dev/null 2>&1; then
@@ -938,41 +1677,41 @@ flow_update() {
     fi
 
     # Update shell completions from the release ref
-    curl -fsSL "$raw_base/${download_ref}/completions/adbqr.bash" -o "$tmp_dir/adbqr.bash" 2>/dev/null || true
-    curl -fsSL "$raw_base/${download_ref}/completions/_adbqr" -o "$tmp_dir/_adbqr" 2>/dev/null || true
-    curl -fsSL "$raw_base/${download_ref}/completions/adbqr.fish" -o "$tmp_dir/adbqr.fish" 2>/dev/null || true
+    curl -fsSL "$raw_base/${download_ref}/completions/jaaw.bash" -o "$tmp_dir/jaaw.bash" 2>/dev/null || true
+    curl -fsSL "$raw_base/${download_ref}/completions/_jaaw" -o "$tmp_dir/_jaaw" 2>/dev/null || true
+    curl -fsSL "$raw_base/${download_ref}/completions/jaaw.fish" -o "$tmp_dir/jaaw.fish" 2>/dev/null || true
 
     for bash_dir in /usr/share/bash-completion/completions /etc/bash_completion.d; do
-        if [ -d "$bash_dir" ] && [ -f "$tmp_dir/adbqr.bash" ]; then
+        if [ -d "$bash_dir" ] && [ -f "$tmp_dir/jaaw.bash" ]; then
             if [ -w "$bash_dir" ]; then
-                install -m 0644 "$tmp_dir/adbqr.bash" "$bash_dir/adbqr" 2>/dev/null || true
+                install -m 0644 "$tmp_dir/jaaw.bash" "$bash_dir/jaaw" 2>/dev/null || true
             elif command -v sudo >/dev/null 2>&1; then
-                sudo install -m 0644 "$tmp_dir/adbqr.bash" "$bash_dir/adbqr" 2>/dev/null || true
+                sudo install -m 0644 "$tmp_dir/jaaw.bash" "$bash_dir/jaaw" 2>/dev/null || true
             fi
             break
         fi
     done
 
     local zsh_dir="/usr/share/zsh/site-functions"
-    if [ -d "$zsh_dir" ] && [ -f "$tmp_dir/_adbqr" ]; then
+    if [ -d "$zsh_dir" ] && [ -f "$tmp_dir/_jaaw" ]; then
         if [ -w "$zsh_dir" ]; then
-            install -m 0644 "$tmp_dir/_adbqr" "$zsh_dir/_adbqr" 2>/dev/null || true
+            install -m 0644 "$tmp_dir/_jaaw" "$zsh_dir/_jaaw" 2>/dev/null || true
         elif command -v sudo >/dev/null 2>&1; then
-            sudo install -m 0644 "$tmp_dir/_adbqr" "$zsh_dir/_adbqr" 2>/dev/null || true
+            sudo install -m 0644 "$tmp_dir/_jaaw" "$zsh_dir/_jaaw" 2>/dev/null || true
         fi
     fi
 
     local fish_dir="/usr/share/fish/vendor_completions.d"
-    if [ -d "$fish_dir" ] && [ -f "$tmp_dir/adbqr.fish" ]; then
+    if [ -d "$fish_dir" ] && [ -f "$tmp_dir/jaaw.fish" ]; then
         if [ -w "$fish_dir" ]; then
-            install -m 0644 "$tmp_dir/adbqr.fish" "$fish_dir/adbqr.fish" 2>/dev/null || true
+            install -m 0644 "$tmp_dir/jaaw.fish" "$fish_dir/jaaw.fish" 2>/dev/null || true
         elif command -v sudo >/dev/null 2>&1; then
-            sudo install -m 0644 "$tmp_dir/adbqr.fish" "$fish_dir/adbqr.fish" 2>/dev/null || true
+            sudo install -m 0644 "$tmp_dir/jaaw.fish" "$fish_dir/jaaw.fish" 2>/dev/null || true
         fi
     fi
 
     echo ""
-    success "adbqr berhasil diperbarui ke versi ${GREEN}${BOLD}$remote_ver${RESET}!"
+    success "jaaw berhasil diperbarui ke versi ${GREEN}${BOLD}$remote_ver${RESET}!"
 }
 
 # Interactive Wizard Menu
@@ -994,12 +1733,14 @@ flow_wizard_menu() {
         echo -e "  ${BOLD}[4]${RESET} Mirror Layar dengan scrcpy"
         echo -e "  ${BOLD}[5]${RESET} Manual Pairing (Menggunakan 6-digit Code & IP:Port)"
         echo -e "  ${BOLD}[6]${RESET} Riwayat Perangkat (History)"
-        echo -e "  ${BOLD}[7]${RESET} System Diagnostics (Cek Avahi, Firewall, & Paket Fedora)"
-        echo -e "  ${BOLD}[8]${RESET} Reset / Restart ADB Server"
-        echo -e "  ${BOLD}[9]${RESET} Cek Pembaruan (Update adbqr)"
+        echo -e "  ${BOLD}[7]${RESET} Daftar Perangkat Aktif & Alias (jaaw devices)"
+        echo -e "  ${BOLD}[8]${RESET} Kelola Alias Perangkat (jaaw alias)"
+        echo -e "  ${BOLD}[9]${RESET} System Diagnostics (Cek Avahi, Firewall, & Paket Fedora)"
+        echo -e "  ${BOLD}[10]${RESET} Reset / Restart ADB Server"
+        echo -e "  ${BOLD}[11]${RESET} Cek Pembaruan (Update jaaw)"
         echo -e "  ${BOLD}[0]${RESET} Keluar"
         echo -e "${CYAN}------------------------------------------------------------------${RESET}"
-        echo -ne "Pilih menu [1-9, 0]: "
+        echo -ne "Pilih menu [1-11, 0, a, d]: "
         local opt
         read -r opt || true
         echo ""
@@ -1015,9 +1756,11 @@ flow_wizard_menu() {
                ;;
             5) flow_manual_pair; break ;;
             6) flow_history ;;
-            7) flow_diagnostics ;;
-            8) flow_reset_adb ;;
-            9) flow_update ;;
+            7|d|D) flow_devices ;;
+            8|a|A) flow_alias ;;
+            9) flow_diagnostics ;;
+            10) flow_reset_adb ;;
+            11) flow_update ;;
             0|q|Q) echo "Sampai jumpa!"; exit 0 ;;
             *) warn "Pilihan tidak valid, silakan coba lagi." ;;
         esac
@@ -1025,63 +1768,102 @@ flow_wizard_menu() {
 }
 
 show_version() {
-    echo -e "${CYAN}${BOLD}adbqr${RESET} version ${GREEN}${VERSION}${RESET}"
-    echo -e "Android Wireless Debugging Wizard & QR Pairer for Linux"
+    echo -e "${CYAN}${BOLD}jaaw${RESET} version ${GREEN}${VERSION}${RESET}"
+    echo -e "Jembatan Awakutu Android Wireless (Android Debug Bridge Wireless Companion)"
     echo ""
     echo -e "  ${BOLD}Created by:${RESET}  Neflalabs"
     echo -e "  ${BOLD}Website:${RESET}     https://npx.my.id"
-    echo -e "  ${BOLD}GitHub:${RESET}      https://github.com/neflalabs/adbqr"
+    echo -e "  ${BOLD}GitHub:${RESET}      https://github.com/neflalabs/jaaw"
     echo -e "  ${BOLD}Instagram:${RESET}   @neflalabs (https://instagram.com/neflalabs)"
 }
 
-usage() {
-    cat <<'EOF'
-Usage: adbqr [OPTIONS] [-- [SCRCPY_OPTIONS...]]
+show_quick_help() {
+    echo -e "$(cat <<EOF
+${BOLD}${CYAN}jaaw${RESET} ${DIM}${VERSION} — Jembatan Awakutu Android Wireless${RESET}
 
-Android Wireless Debugging tool & wizard for Linux & Android 11-16+.
+${BOLD}Penggunaan:${RESET} jaaw [perintah|opsi]
 
-Modes & Actions:
-  -p, --pair              Pair a new device using QR code and auto-connect.
-  -c, --connect           Quick-connect to an active wireless device via mDNS.
-  -w, --wizard            Launch the interactive TUI wizard menu.
-  -u, --usb               Switch a connected USB device to Wireless ADB (port 5555).
-  -m, --manual            Pair manually using 6-digit pairing code and IP:Port.
-  -l, --list              List known device history (~/.config/adbqr/).
-  -d, --diag              Run Linux/Fedora diagnostics (Avahi, firewall, ADB).
-  -r, --reset             Restart ADB server and disconnect wireless devices.
-  -U, --update, update    Check for and install updates from GitHub.
+${BOLD}Perintah Utama:${RESET}
+  ${GREEN}pair, -p${RESET}            Pairing via QR Code & auto-connect
+  ${GREEN}connect, -c${RESET}         Koneksi cepat ke perangkat aktif di Wi-Fi
+  ${GREEN}devices${RESET}             Tampilkan daftar perangkat & mapping alias
+  ${GREEN}wizard, -w${RESET}          Menu wizard interaktif (TUI)
 
-Mirroring & Streaming Options (scrcpy):
-  -s, --screen            Auto-launch scrcpy mirror screen after connecting (Smooth Wi-Fi preset).
-  -b, --bitrate RATE      Set custom scrcpy video bitrate (e.g. 2M, 4M, 6M, 8M).
-      --screen-off, --off Turn off device screen while mirroring (--turn-screen-off --stay-awake).
-      --scrcpy-args ARGS  Pass custom raw arguments string to scrcpy.
-  -- [SCRCPY_OPTIONS...]  Pass all trailing arguments directly to scrcpy.
+${BOLD}Device Alias & Kontrol:${RESET}
+  ${CYAN}alias [set|list|rm]${RESET} Kelola alias nama perangkat
+  ${CYAN}shell <alias>${RESET}       Buka ADB shell interaktif
+  ${CYAN}scrcpy <alias>${RESET}      Mirror layar perangkat (scrcpy)
+  ${CYAN}use <alias>${RESET}         Pilih perangkat aktif (export ANDROID_SERIAL)
+  ${CYAN}init${RESET}                Inisialisasi wrapper shell 'adb -s <alias>'
 
-General Options:
-  -t, --timeout SEC       Set mDNS discovery timeout in seconds (default: 60).
-  -v, --version           Show version information and credits.
-  -h, --help              Show this help message.
+${BOLD}Opsi Cepat:${RESET}
+  ${YELLOW}-s, --screen${RESET}        Auto-mirror screen setelah connect
+  ${YELLOW}-u, --usb${RESET}           Alihkan perangkat USB ke Wireless (port 5555)
+  ${YELLOW}-d, --diag${RESET}          Diagnostik sistem & firewall
+  ${YELLOW}-r, --reset${RESET}         Restart ADB server
+  ${YELLOW}-h, --help${RESET}          Bantuan lengkap dan opsi lanjutan
 
-Environment Variables:
-  SCRCPY_ARGS             Default arguments passed to scrcpy (e.g. export SCRCPY_ARGS="-b 4M").
-
-Examples:
-  adbqr -p                         # Pair new device with QR code
-  adbqr -c                         # Quick connect to paired device
-  adbqr -s                         # QR pair + smooth screen mirroring
-  adbqr -c -s                      # Quick connect + smooth screen mirroring
-  adbqr -c -s -b 2M --screen-off   # Quick connect + 2M bitrate + turn screen off
-  adbqr -s -- -b 2M --stay-awake   # Pass raw flags to scrcpy via '--'
-  adbqr -w                         # Interactive wizard menu
-  adbqr -u                         # 1-Click USB to Wireless switch
-  adbqr update                     # Check and install updates
+${DIM}Tips: Jalankan ${BOLD}jaaw -w${RESET}${DIM} untuk wizard TUI, atau ${BOLD}jaaw --help${RESET}${DIM} untuk bantuan lengkap.${RESET}
 EOF
+)"
+}
+
+usage() {
+    echo -e "$(cat <<EOF
+${BOLD}${CYAN}jaaw${RESET} — Jembatan Awakutu Android Wireless (${GREEN}${VERSION}${RESET})
+${DIM}ADB Wireless Companion & Device Alias Manager for Linux.${RESET}
+
+${BOLD}PENGGUNAAN:${RESET}
+  jaaw [PERINTAH|OPSI] [-- [SCRCPY_OPTIONS...]]
+
+${BOLD}KONEKSI & PAIRING:${RESET}
+  ${GREEN}-p, --pair, pair${RESET}          Pairing via QR Code & auto-connect
+  ${GREEN}-c, --connect, connect${RESET}    Koneksi cepat ke perangkat aktif via mDNS
+  ${GREEN}-w, --wizard, wizard${RESET}      Buka menu interaktif (TUI wizard)
+  ${GREEN}-u, --usb, usb${RESET}            Alihkan koneksi USB ke Wireless (port 5555)
+  ${GREEN}-m, --manual, manual${RESET}      Pairing manual dengan IP:Port & 6-digit code
+
+${BOLD}DEVICE ALIAS & SMART WRAPPER:${RESET}
+  ${CYAN}devices${RESET}                   Tampilkan tabel perangkat & mapping alias
+  ${CYAN}alias set <nama> [target]${RESET} Daftarkan atau perbarui alias perangkat
+  ${CYAN}alias list${RESET}                Lihat daftar alias yang tersimpan
+  ${CYAN}alias rm <nama>${RESET}           Hapus alias yang terdaftar
+  ${CYAN}shell <alias> [args...]${RESET}   Buka ADB shell ke perangkat target
+  ${CYAN}scrcpy <alias> [args...]${RESET}  Buka mirror screen ke perangkat target
+  ${CYAN}use <alias>${RESET}               Set aktif target (export ANDROID_SERIAL)
+  ${CYAN}exec <alias> <cmd...>${RESET}     Jalankan perintah ADB pada perangkat target
+  ${CYAN}init [bash|zsh|fish]${RESET}      Inisialisasi smart wrapper shell adb
+
+${BOLD}MIRRORING & STREAMING (scrcpy):${RESET}
+  ${YELLOW}-s, --screen${RESET}              Auto-launch mirror screen setelah connect
+  ${YELLOW}-b, --bitrate RATE${RESET}        Set bitrate video (misal: 2M, 4M, 8M)
+  ${YELLOW}--screen-off, --off${RESET}       Matikan layar perangkat saat mirroring
+  ${YELLOW}--scrcpy-args "ARGS"${RESET}      Kirim argumen custom ke scrcpy
+  ${YELLOW}-- [SCRCPY_OPTIONS...]${RESET}    Oper argumen langsung ke scrcpy
+
+${BOLD}DIAGNOSTIK & SISTEM:${RESET}
+  ${BLUE}-d, --diag, diag${RESET}          Diagnostik Avahi/mDNS, firewall, & ADB
+  ${BLUE}-r, --reset, reset${RESET}        Restart ADB server & reset koneksi
+  ${BLUE}-l, --list, list${RESET}          Lihat riwayat perangkat tersimpan
+  ${BLUE}-U, --update, update${RESET}      Periksa dan pasang pembaruan dari GitHub
+  ${BLUE}-t, --timeout DETIK${RESET}       Set timeout deteksi mDNS (default: 60)
+  ${BLUE}-v, --version${RESET}             Tampilkan informasi versi & pembuat
+  ${BLUE}-h, --help${RESET}                Tampilkan panduan bantuan ini
+
+${BOLD}CONTOH PENGGUNAAN:${RESET}
+  jaaw -p                          # QR pairing & auto-connect
+  jaaw -c -s                       # Connect ke Wi-Fi & langsung mirror layar
+  jaaw alias set poco              # Buat alias 'poco' untuk HP
+  jaaw devices                     # Cek status semua perangkat terhubung
+  jaaw shell poco                  # Masuk ke shell HP poco
+  eval "\$(jaaw init)"              # Aktifkan 'adb -s poco ...' transparan di shell
+EOF
+)"
 }
 
 main() {
     if [ $# -eq 0 ]; then
-        usage
+        show_quick_help
         return 0
     fi
 
@@ -1090,9 +1872,43 @@ main() {
     while [ $# -gt 0 ]; do
         case "$1" in
             update|--update|-U) action="update" ;;
-            -w|--wizard)      action="wizard" ;;
-            -p|--pair)        action="pair" ;;
-            -c|--connect)     action="connect" ;;
+            alias)
+                shift
+                flow_alias "$@"
+                return 0
+                ;;
+            devices|--devices)
+                flow_devices
+                return 0
+                ;;
+            exec)
+                shift
+                flow_exec "$@"
+                return 0
+                ;;
+            shell)
+                shift
+                flow_shell "$@"
+                return 0
+                ;;
+            scrcpy)
+                shift
+                flow_scrcpy "$@"
+                return 0
+                ;;
+            use)
+                shift
+                flow_use "$@"
+                return 0
+                ;;
+            init)
+                shift
+                flow_init "$@"
+                return 0
+                ;;
+            -w|--wizard|wizard)   action="wizard" ;;
+            -p|--pair|pair)       action="pair" ;;
+            -c|--connect|connect) action="connect" ;;
             -s|--screen)      LAUNCH_SCRCPY=true ;;
             -b|--bitrate)
                 shift
@@ -1117,11 +1933,11 @@ main() {
                 LAUNCH_SCRCPY=true
                 break
                 ;;
-            -u|--usb)         action="usb" ;;
-            -m|--manual)      action="manual" ;;
-            -l|--list)        action="list" ;;
-            -d|--diag)        action="diag" ;;
-            -r|--reset)       action="reset" ;;
+            -u|--usb|usb)         action="usb" ;;
+            -m|--manual|manual)   action="manual" ;;
+            -l|--list|list)       action="list" ;;
+            -d|--diag|diag)       action="diag" ;;
+            -r|--reset|reset)     action="reset" ;;
             -t|--timeout)
                 shift
                 [ $# -gt 0 ] || die "Nilai timeout harus ditentukan (contoh: -t 60)."
