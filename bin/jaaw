@@ -859,7 +859,7 @@ flow_history() {
 
     printf "  %-20s %-16s %-8s %-20s %-14s\n" "TERAKHIR KONEK" "IP ADDRESS" "PORT" "MODEL" "OS"
     printf "  %-20s %-16s %-8s %-20s %-14s\n" "-------------------" "---------------" "------" "-------------------" "-------------"
-    while IFS=$'\t' read -r t ip port model os s_name; do
+    while IFS=$'\t' read -r t ip port model os _; do
         printf "  %-20s %-16s %-8s %-20s %-14s\n" "$t" "$ip" "$port" "$model" "$os"
     done < "$HISTORY_FILE"
     echo ""
@@ -1004,7 +1004,7 @@ set_device_alias() {
 
         # History devices
         if [ -f "$HISTORY_FILE" ]; then
-            while IFS=$'\t' read -r t ip port m os s_name; do
+            while IFS=$'\t' read -r _ ip port m _ s_name; do
                 [ -n "$ip" ] || continue
                 local t_id="${s_name:-$ip:$port}"
                 local dup=false
@@ -1125,7 +1125,7 @@ list_device_aliases() {
     printf "  %-12s %-16s %-20s %-40s\n" "ALIAS" "MODEL" "IP:PORT" "TARGET / REAL SERIAL"
     printf "  %-12s %-16s %-20s %-40s\n" "------------" "----------------" "--------------------" "----------------------------------------"
 
-    while IFS=$'\t' read -r a target m ip_port updated; do
+    while IFS=$'\t' read -r a target m ip_port _; do
         [[ "$a" =~ ^# ]] && continue
         [ -n "$a" ] || continue
         printf "  ${CYAN}%-12s${RESET} ${GREEN}%-16s${RESET} %-20s %-40s\n" "$a" "${m:-Unknown}" "${ip_port:--}" "$target"
@@ -1198,7 +1198,7 @@ flow_devices() {
         local ip_port="-"
 
         if [ -f "$ALIAS_FILE" ]; then
-            while IFS=$'\t' read -r a t m i_p u; do
+            while IFS=$'\t' read -r a t m i_p _; do
                 [[ "$a" =~ ^# ]] && continue
                 [ -n "$a" ] || continue
                 local base_t="$t"
@@ -1274,7 +1274,7 @@ flow_use() {
         fi
         echo -e "${BOLD}Pilih alias untuk digunakan sebagai target aktif:${RESET}"
         local list=()
-        while IFS=$'\t' read -r a t m ip_port u; do
+        while IFS=$'\t' read -r a _; do
             [[ "$a" =~ ^# ]] && continue
             [ -n "$a" ] || continue
             list+=("$a")
